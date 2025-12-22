@@ -21,25 +21,63 @@ def get_teams():
     df_teams = pd.json_normalize(teams)
     return df_teams[['team.id', 'team.displayName']]
 
-def get_games(target_team_id):
-    """Return a dataframe of completed games for the team with added result/opponent/score columns."""
-    url = f"http://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/teams/{target_team_id}/schedule"
-    response = requests.get(url)
-    response.raise_for_status()
-    data = response.json()
-    events = data.get('events', [])
-    df_events = pd.json_normalize(events)
+def get_games(target_team_id, selected_season_year):
+    """
+    Return a dataframe of completed games (regular + postseason)
+    with result/opponent/score columns.
+    """
+
+    def fetch_schedule(url):
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+        events = data.get("events", [])
+        return pd.json_normalize(events)
+
+    # -----------------------------
+    # 1️⃣ Fetch regular season
+    # -----------------------------
+    reg_url = (
+        f"http://site.api.espn.com/apis/site/v2/sports/basketball/"
+        f"mens-college-basketball/teams/{target_team_id}/schedule"
+        f"?season={selected_season_year}"
+    )
+    df_reg = fetch_schedule(reg_url)
+
+    # -----------------------------
+    # 2️⃣ Fetch postseason
+    # -----------------------------
+    post_url = (
+        f"http://site.api.espn.com/apis/site/v2/sports/basketball/"
+        f"mens-college-basketball/teams/{target_team_id}/schedule"
+        f"?season={selected_season_year}&seasontype=3"
+    )
+    df_post = fetch_schedule(post_url)
+
+    # -----------------------------
+    # 3️⃣ Combine + de-duplicate
+    # -----------------------------
+    df_events = pd.concat([df_reg, df_post], ignore_index=True)
 
     if df_events.empty:
         return df_events
 
-    # Keep only completed games (safe checks)
+    # De-duplicate by ESPN event id
+    if "id" in df_events.columns:
+        df_events = df_events.drop_duplicates(subset="id")
+
+    # -----------------------------
+    # 4️⃣ Keep completed games only
+    # -----------------------------
     df_events = df_events[
         df_events["competitions"].apply(
             lambda comps: (
                 isinstance(comps, list)
                 and len(comps) > 0
-                and comps[0].get("status", {}).get("type", {}).get("completed") is True
+                and comps[0]
+                .get("status", {})
+                .get("type", {})
+                .get("completed") is True
             )
         )
     ].copy()
@@ -47,49 +85,65 @@ def get_games(target_team_id):
     if df_events.empty:
         return df_events
 
-    # Add result (Win/Loss), opponent name, and score string
+    # -----------------------------
+    # 5️⃣ Parse results
+    # -----------------------------
     def parse_row(row):
         comps = row["competitions"]
         if not isinstance(comps, list) or len(comps) == 0:
-            return pd.Series({"result": None, "opponent_name": None, "score_str": None})
+            return pd.Series(
+                {"result": None, "opponent_name": None, "score_str": None}
+            )
 
         competitors = comps[0].get("competitors", [])
-        # find our team and opponent
-        our_score = None
-        opp_score = None
-        opponent_name = None
         our_id = str(target_team_id)
-        our_winner = None
+
+        our_score = 0
+        opp_score = 0
+        opponent_name = None
+        our_winner = False
 
         for c in competitors:
             team_obj = c.get("team", {})
             team_id = str(team_obj.get("id", ""))
-            score_val = c.get("score", {}).get("value")
+            score_val = c.get("score", {}).get("value", 0)
+
             if team_id == our_id:
-                our_score = int(score_val) if score_val is not None else 0
-                our_winner = c.get("winner")
+                our_score = int(score_val or 0)
+                our_winner = c.get("winner", False)
             else:
-                opp_score = int(score_val) if score_val is not None else 0
+                opp_score = int(score_val or 0)
                 opponent_name = team_obj.get("displayName")
 
-        # score string (display as ourScore–oppScore)
-        if our_score is None: our_score = 0
-        if opp_score is None: opp_score = 0
         score_str = f"{our_score}–{opp_score}"
-
         result = "Win" if our_winner else "Loss"
-        return pd.Series({"result": result, "opponent_name": opponent_name, "score_str": score_str})
+
+        return pd.Series(
+            {
+                "result": result,
+                "opponent_name": opponent_name,
+                "score_str": score_str,
+            }
+        )
 
     parsed = df_events.apply(parse_row, axis=1)
     df_events = pd.concat([df_events, parsed], axis=1)
 
-    # Add formatted date and option_name (base text, used for other logic if needed)
-    df_events['display_date'] = pd.to_datetime(df_events["date"]).dt.strftime("%Y-%m-%d")
-    # keep original option_name too if exists, but we'll build a nicer label later
-    df_events['option_name'] = df_events.get('option_name', df_events['display_date'] + ": " + df_events.get('name', ''))
+    # -----------------------------
+    # 6️⃣ Display fields
+    # -----------------------------
+    df_events["display_date"] = pd.to_datetime(df_events["date"]).dt.strftime("%Y-%m-%d")
 
-    # Ensure id column is string
-    df_events['id'] = df_events['id'].astype(str)
+    df_events["option_name"] = (
+        df_events["display_date"]
+        + ": "
+        + df_events["opponent_name"]
+        + " ("
+        + df_events["result"]
+        + ")"
+    )
+
+    df_events["id"] = df_events["id"].astype(str)
 
     return df_events
 
@@ -128,10 +182,58 @@ def split_sections(html_text):
     matches = re.findall(pattern, html_text, flags=re.DOTALL)
     return {title.strip(): body.strip() for title, body in matches}
 
+@st.cache_data
+def load_seasons():
+    url = (
+        "https://site.web.api.espn.com/apis/site/v2/seasons/dropdown"
+        "?sport=basketball&league=mens-college-basketball"
+        "&region=us&lang=en&contentorigin=espn&startingseason=2002"
+    )
+    r = requests.get(url)
+    r.raise_for_status()
+    return r.json()
+
+def parse_seasons(json_data):
+    seasons = json_data.get("seasons", [])
+    # Example output often contains a list of dicts with "year" and "displayName"
+    # but you should inspect the real structure with `st.write(json_data)` once
+    season_list = [
+        {
+            "year": s.get("year"),
+            "displayName": s.get("displayName", str(s.get("year"))),
+        }
+        for s in seasons
+    ]
+    return pd.DataFrame(season_list)
+
 # -----------------------------
 # MAIN APP
 # -----------------------------
 st.title("College Basketball Summarizer")
+
+# Load seasons
+seasons_json = load_seasons()
+df_seasons = parse_seasons(seasons_json)
+
+# Sort so most recent season is first
+df_seasons = df_seasons.sort_values("year", ascending=False).reset_index(drop=True)
+
+# Default to the most recent season (index 0)
+selected_season_display = st.selectbox(
+    "Select a season:",
+    df_seasons["displayName"].tolist(),
+    index=0
+)
+
+# Store the selected season year for later use
+selected_season_year = df_seasons.loc[
+    df_seasons["displayName"] == selected_season_display, "year"
+].iloc[0]
+
+st.write(
+    f"Selected season: **{selected_season_display}** "
+    f"(year = {selected_season_year})"
+)
 
 # Load teams and present team selector
 df_teams = get_teams()
@@ -143,10 +245,10 @@ if selected_team_name != "Select a team...":
     team_id = df_teams.loc[df_teams["team.displayName"] == selected_team_name, "team.id"].iloc[0]
 
     @st.cache_data
-    def load_team_events_cached(team_id):
-        return get_games(team_id)
+    def load_team_events_cached(team_id, selected_season_year):
+        return get_games(team_id, selected_season_year)
 
-    df_events = load_team_events_cached(team_id)
+    df_events = load_team_events_cached(team_id, selected_season_year)
 
     if df_events is None or df_events.empty:
         st.warning("No completed games found for this team.")
