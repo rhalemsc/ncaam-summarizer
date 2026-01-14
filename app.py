@@ -392,14 +392,24 @@ if selected_team_name != "Select a team...":
 
                 # Call Cohere
                 co = Client(API_KEY)
-                response = co.chat(
-                    model="command-a-03-2025",
-                    message=prompt,
-                    temperature=0.2,
-                    max_tokens=2500
-                )
 
-                spinner.empty()
+                try:
+                    response = co.chat(
+                        model="command-a-03-2025",
+                        message=prompt,
+                        temperature=0.2,
+                        max_tokens=2500
+                    )
+
+                    spinner.empty()
+                except Exception as e:
+                    spinner.empty()
+                    st.error(
+                     "⚠️ The summary service is temporarily unavailable; someone might be spamming the app and hitting my free cohere limit."
+                    "Please wait a moment and try again."  
+                    )
+
+                    st.stop()
 
                 # Parse returned HTML into sections and render
                 sections = split_sections(response.text)
