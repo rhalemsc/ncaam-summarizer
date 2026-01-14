@@ -35,7 +35,7 @@ def get_games(target_team_id, selected_season_year):
         return pd.json_normalize(events)
 
     # -----------------------------
-    # 1️⃣ Fetch regular season
+    # Fetch regular season
     # -----------------------------
     reg_url = (
         f"http://site.api.espn.com/apis/site/v2/sports/basketball/"
@@ -45,7 +45,7 @@ def get_games(target_team_id, selected_season_year):
     df_reg = fetch_schedule(reg_url)
 
     # -----------------------------
-    # 2️⃣ Fetch postseason
+    # Fetch postseason
     # -----------------------------
     post_url = (
         f"http://site.api.espn.com/apis/site/v2/sports/basketball/"
@@ -55,7 +55,7 @@ def get_games(target_team_id, selected_season_year):
     df_post = fetch_schedule(post_url)
 
     # -----------------------------
-    # 3️⃣ Combine + de-duplicate
+    # Combine + de-duplicate
     # -----------------------------
     df_events = pd.concat([df_reg, df_post], ignore_index=True)
 
@@ -67,7 +67,7 @@ def get_games(target_team_id, selected_season_year):
         df_events = df_events.drop_duplicates(subset="id")
 
     # -----------------------------
-    # 4️⃣ Keep completed games only
+    # Keep completed games only
     # -----------------------------
     df_events = df_events[
         df_events["competitions"].apply(
@@ -86,7 +86,7 @@ def get_games(target_team_id, selected_season_year):
         return df_events
 
     # -----------------------------
-    # 5️⃣ Parse results
+    # Parse results
     # -----------------------------
     def parse_row(row):
         comps = row["competitions"]
@@ -130,7 +130,7 @@ def get_games(target_team_id, selected_season_year):
     df_events = pd.concat([df_events, parsed], axis=1)
 
     # -----------------------------
-    # 6️⃣ Display fields
+    # Display fields
     # -----------------------------
     df_events["display_date"] = pd.to_datetime(df_events["date"]).dt.strftime("%Y-%m-%d")
 
@@ -386,7 +386,7 @@ if selected_team_name != "Select a team...":
                     font-weight: bold;
                     text-align: center;
                 ">
-                    Writing your summary, please wait...
+                    Writing your summary, it may take up to one minute, please wait...
                 </div>
                 """, unsafe_allow_html=True)
 
